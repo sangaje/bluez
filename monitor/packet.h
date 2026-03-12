@@ -23,6 +23,7 @@
 #define PACKET_FILTER_SHOW_A2DP_STREAM	(1 << 6)
 #define PACKET_FILTER_SHOW_MGMT_SOCKET	(1 << 7)
 #define PACKET_FILTER_SHOW_ISO_DATA	(1 << 8)
+#define PACKET_FILTER_SHOW_KMSG		(1 << 9)
 #define TV_MSEC(_tv) (long long)((_tv).tv_sec * 1000 + (_tv).tv_usec / 1000)
 
 struct packet_latency {
@@ -38,6 +39,15 @@ struct packet_frame {
 	size_t len;
 };
 
+enum {
+	BTMON_CONN_ACL = 0x00,
+	BTMON_CONN_LE,
+	BTMON_CONN_SCO,
+	BTMON_CONN_ESCO,
+	BTMON_CONN_CIS,
+	BTMON_CONN_BIS
+};
+
 struct packet_conn_data {
 	uint16_t index;
 	uint8_t  src[6];
@@ -46,6 +56,10 @@ struct packet_conn_data {
 	uint8_t  type;
 	uint8_t  dst[6];
 	uint8_t  dst_type;
+	union {
+		char *dst_oui;
+		char *dst_rtype;
+	};
 	struct queue *tx_q;
 	struct queue *chan_q;
 	struct packet_latency tx_l;
@@ -77,6 +91,7 @@ void packet_print_rssi(const char *label, int8_t rssi);
 void packet_print_ad(const void *data, uint8_t size);
 void packet_print_features_lmp(const uint8_t *features, uint8_t page);
 void packet_print_features_ll(const uint8_t *features);
+void packet_print_features_ext_ll(uint8_t page, const uint8_t *features);
 void packet_print_features_msft(const uint8_t *features);
 void packet_print_channel_map_lmp(const uint8_t *map);
 void packet_print_channel_map_ll(const uint8_t *map);
@@ -103,8 +118,8 @@ void packet_index_info(struct timeval *tv, uint16_t index, const char *label,
 void packet_vendor_diag(struct timeval *tv, uint16_t index,
 					uint16_t manufacturer,
 					const void *data, uint16_t size);
-void packet_system_note(struct timeval *tv, struct ucred *cred,
-					uint16_t index, const void *message);
+void packet_system_note(struct timeval *tv, struct ucred *cred, uint16_t index,
+					const void *data, uint16_t size);
 void packet_user_logging(struct timeval *tv, struct ucred *cred,
 					uint16_t index, uint8_t priority,
 					const char *ident, const void *data,

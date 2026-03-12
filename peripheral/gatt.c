@@ -18,9 +18,9 @@
 #include <string.h>
 #include <sys/epoll.h>
 
-#include "lib/bluetooth.h"
-#include "lib/l2cap.h"
-#include "lib/uuid.h"
+#include "bluetooth/bluetooth.h"
+#include "bluetooth/l2cap.h"
+#include "bluetooth/uuid.h"
 #include "src/shared/mainloop.h"
 #include "src/shared/util.h"
 #include "src/shared/queue.h"
@@ -29,8 +29,6 @@
 #include "src/shared/gatt-server.h"
 #include "src/shared/gatt-client.h"
 #include "peripheral/gatt.h"
-
-#define ATT_CID 4
 
 #define UUID_GAP 0x1800
 
@@ -105,7 +103,7 @@ static struct gatt_conn *gatt_conn_new(int fd)
 
 	conn->att = bt_att_new(fd, false);
 	if (!conn->att) {
-		fprintf(stderr, "Failed to initialze ATT transport layer\n");
+		fprintf(stderr, "Failed to initialize ATT transport layer\n");
 		free(conn);
 		return NULL;
 	}
@@ -243,7 +241,7 @@ void gatt_server_start(void)
 
 	memset(&addr, 0, sizeof(addr));
 	addr.l2_family = AF_BLUETOOTH;
-	addr.l2_cid = htobs(ATT_CID);
+	addr.l2_cid = htobs(BT_ATT_CID);
 	memcpy(&addr.l2_bdaddr, static_addr, 6);
 	addr.l2_bdaddr_type = BDADDR_LE_RANDOM;
 

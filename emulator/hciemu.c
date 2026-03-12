@@ -25,8 +25,8 @@
 
 #include <glib.h>
 
-#include "lib/bluetooth.h"
-#include "lib/hci.h"
+#include "bluetooth/bluetooth.h"
+#include "bluetooth/hci.h"
 
 #include "monitor/bt.h"
 #include "emulator/vhci.h"
@@ -118,8 +118,35 @@ static void writev_callback(const struct iovec *iov, int iovlen,
 	fd = g_io_channel_unix_get_fd(channel);
 
 	written = writev(fd, iov, iovlen);
-	if (written < 0)
-		return;
+	if (written < 0) {
+		ssize_t ret;
+		int size, data_len;
+		socklen_t len = sizeof(size);
+		int i;
+
+		if (errno != EAGAIN)
+			return;
+
+		data_len = 0;
+
+		for (i = 0; i < iovlen; i++)
+			data_len += iov[i].iov_len;
+
+		/* Automatically bump the send buffer size if the data to be
+		 * sent is larger than the current buffer size. This is needed
+		 * for btdev which doesn't flush the socket buffer until all
+		 * data has been sent.
+		 */
+		ret = getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, &len);
+		if (!ret) {
+			size += data_len;
+			setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, len);
+		}
+
+		written = writev(fd, iov, iovlen);
+		if (written < 0)
+			return;
+	}
 }
 
 static gboolean receive_bthost(GIOChannel *channel, GIOCondition condition,
@@ -308,6 +335,7 @@ static struct hciemu_client *hciemu_client_new(struct hciemu *hciemu,
 {
 	struct hciemu_client *client;
 	int sv[2];
+	uint16_t acl_mtu, iso_mtu;
 
 	client = new0(struct hciemu_client, 1);
 	if (!client)
@@ -341,6 +369,10 @@ static struct hciemu_client *hciemu_client_new(struct hciemu *hciemu,
 	client->source = create_source_btdev(sv[0], client->dev);
 	client->host_source = create_source_bthost(sv[1], client->host);
 	client->start_source = g_idle_add(start_host, client);
+
+	btdev_get_mtu(client->dev, &acl_mtu, NULL, &iso_mtu);
+	bthost_set_acl_mtu(client->host, acl_mtu);
+	bthost_set_iso_mtu(client->host, iso_mtu);
 
 	return client;
 }
@@ -376,6 +408,9 @@ struct hciemu *hciemu_new_num(enum hciemu_type type, uint8_t num)
 		break;
 	case HCIEMU_TYPE_BREDRLE52:
 		hciemu->btdev_type = BTDEV_TYPE_BREDRLE52;
+		break;
+	case HCIEMU_TYPE_BREDRLE60:
+		hciemu->btdev_type = BTDEV_TYPE_BREDRLE60;
 		break;
 	default:
 		return NULL;

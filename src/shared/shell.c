@@ -65,13 +65,18 @@ struct input {
 	FILE *f;
 };
 
+typedef enum {
+	MODE_INTERACTIVE = 0,
+	MODE_NON_INTERACTIVE= 1
+} mode_type_t;
+
 static struct {
 	bool init;
 	char *name;
 	char history[256];
 	int argc;
 	char **argv;
-	bool mode;
+	mode_type_t mode;
 	bool zsh;
 	bool monitor;
 	int timeout;
@@ -264,8 +269,6 @@ static void cmd_export(int argc, char *argv[])
 
 static int bt_shell_queue_exec(char *line)
 {
-	int err;
-
 	/* Ignore comments */
 	if (line[0] == '#')
 		return 0;
@@ -283,12 +286,9 @@ static int bt_shell_queue_exec(char *line)
 	}
 
 	bt_shell_printf("%s\n", line);
+	data.line = strdup(line);
 
-	err = bt_shell_exec(line);
-	if (!err)
-		data.line = strdup(line);
-
-	return err;
+	return bt_shell_exec(line);
 }
 
 static bool bt_shell_input_line(struct input *input)
@@ -418,7 +418,8 @@ static void cmd_script(int argc, char *argv[])
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
 
-static const struct bt_shell_menu_entry default_menu[] = {
+static const struct bt_shell_menu default_menu = {
+	.entries = {
 	{ "back",         NULL,       cmd_back, "Return to main menu", NULL,
 							NULL, cmd_back_exists },
 	{ "menu",         "<name>",   cmd_menu, "Select submenu",
@@ -432,7 +433,7 @@ static const struct bt_shell_menu_entry default_menu[] = {
 	{ "export",       NULL,       cmd_export,
 						"Print environment variables" },
 	{ "script",       "<filename>", cmd_script, "Run script" },
-	{ }
+	{} },
 };
 
 static void shell_print_help(void)
@@ -475,7 +476,7 @@ static void shell_print_menu(void)
 		print_menu(entry->cmd, entry->arg ? : "", entry->desc ? : "");
 	}
 
-	for (entry = default_menu; entry->cmd; entry++) {
+	for (entry = default_menu.entries; entry->cmd; entry++) {
 		if (entry->exists && !entry->exists(data.menu))
 			continue;
 
@@ -490,7 +491,7 @@ static void shell_print_menu_zsh_complete(void)
 	for (entry = data.menu->entries; entry->cmd; entry++)
 		printf("%s:%s\n", entry->cmd, entry->desc ? : "");
 
-	for (entry = default_menu; entry->cmd; entry++) {
+	for (entry = default_menu.entries; entry->cmd; entry++) {
 		if (entry->exists && !entry->exists(data.menu))
 			continue;
 
@@ -524,6 +525,7 @@ static int cmd_exec(const struct bt_shell_menu_entry *entry,
 	wordexp_t w;
 	size_t len;
 	char *man, *opt;
+	const char *man2, *opt2;
 	int flags = WRDE_NOCMD;
 	bool optargs = false;
 
@@ -546,24 +548,24 @@ static int cmd_exec(const struct bt_shell_menu_entry *entry,
 	}
 
 	/* Find last mandatory arguments */
-	man = strrchr(entry->arg, '>');
-	if (!man) {
+	man2 = strrchr(entry->arg, '>');
+	if (!man2) {
 		opt = strdup(entry->arg);
 		goto optional;
 	}
 
-	len = man - entry->arg;
+	len = man2 - entry->arg;
 	if (entry->arg[0] == '<')
 		man = strndup(entry->arg, len + 1);
 	else {
 		/* Find where mandatory arguments start */
-		opt = strrchr(entry->arg, '<');
+		opt2 = strrchr(entry->arg, '<');
 		/* Skip if mandatory arguments are not in the right format */
-		if (!opt || opt > man) {
+		if (!opt2 || opt2 > man2) {
 			opt = strdup(entry->arg);
 			goto optional;
 		}
-		man = strndup(opt, man - opt + 1);
+		man = strndup(opt2, man2 - opt2 + 1);
 		optargs = true;
 	}
 
@@ -622,9 +624,11 @@ fail:
 	return -EINVAL;
 }
 
-static int menu_exec(const struct bt_shell_menu_entry *entry,
+static int menu_exec(const struct bt_shell_menu *menu,
 					int argc, char *argv[])
 {
+	const struct bt_shell_menu_entry *entry = menu->entries;
+
 	for (; entry->cmd; entry++) {
 		if (strcmp(argv[0], entry->cmd))
 			continue;
@@ -636,6 +640,9 @@ static int menu_exec(const struct bt_shell_menu_entry *entry,
 		/* Skip back command if on main menu */
 		if (data.menu == data.main && !strcmp(entry->cmd, "back"))
 			continue;
+
+		if (data.mode == MODE_NON_INTERACTIVE && menu->pre_run)
+			menu->pre_run(menu);
 
 		return cmd_exec(entry, argc, argv);
 	}
@@ -668,7 +675,7 @@ static int submenu_exec(int argc, char *argv[])
 	memmove(argv[0], argv[0] + len + 1, tlen - len - 1);
 	memset(argv[0] + tlen - len - 1, 0, len + 1);
 
-	return menu_exec(submenu->entries, argc, argv);
+	return menu_exec(submenu, argc, argv);
 }
 
 static int shell_exec(int argc, char *argv[])
@@ -681,9 +688,9 @@ static int shell_exec(int argc, char *argv[])
 	if (!argsisutf8(argc, argv))
 		return -EINVAL;
 
-	err  = menu_exec(default_menu, argc, argv);
+	err  = menu_exec(&default_menu, argc, argv);
 	if (err == -ENOENT) {
-		err  = menu_exec(data.menu->entries, argc, argv);
+		err  = menu_exec(data.menu, argc, argv);
 		if (err == -ENOENT) {
 			err = submenu_exec(argc, argv);
 			if (err == -ENOENT) {
@@ -708,7 +715,7 @@ void bt_shell_printf(const char *fmt, ...)
 	if (queue_isempty(data.inputs))
 		return;
 
-	if (data.mode) {
+	if (data.mode == MODE_NON_INTERACTIVE) {
 		va_start(args, fmt);
 		vprintf(fmt, args);
 		va_end(args);
@@ -833,7 +840,7 @@ void bt_shell_prompt_input(const char *label, const char *msg,
 {
 	char *str;
 
-	if (!data.init || data.mode)
+	if (!data.init || data.mode == MODE_NON_INTERACTIVE)
 		return;
 
 	if (data.saved_prompt) {
@@ -966,6 +973,7 @@ static char *cmd_generator(const char *text, int state)
 	static bool default_menu_enabled, menu_enabled, submenu_enabled;
 	static const struct bt_shell_menu *menu;
 	char *cmd;
+	const char *cmd2;
 
 	if (!state) {
 		index = 0;
@@ -975,7 +983,7 @@ static char *cmd_generator(const char *text, int state)
 	}
 
 	if (default_menu_enabled) {
-		cmd = find_cmd(text, default_menu, &index);
+		cmd = find_cmd(text, default_menu.entries, &index);
 		if (cmd) {
 			return cmd;
 		} else {
@@ -1003,11 +1011,11 @@ static char *cmd_generator(const char *text, int state)
 		if (cmd || menu != data.main)
 			return cmd;
 
-		cmd = strrchr(text, '.');
-		if (!cmd)
+		cmd2 = strrchr(text, '.');
+		if (!cmd2)
 			return NULL;
 
-		menu = find_menu(text, cmd - text, NULL);
+		menu = find_menu(text, cmd2 - text, NULL);
 		if (!menu)
 			return NULL;
 
@@ -1166,8 +1174,8 @@ static char **shell_completion(const char *text, int start, int end)
 		if (wordexp(rl_line_buffer, &w, WRDE_NOCMD))
 			return NULL;
 
-		matches = menu_completion(default_menu, text, w.we_wordc,
-							w.we_wordv[0]);
+		matches = menu_completion(default_menu.entries, text,
+						w.we_wordc, w.we_wordv[0]);
 		if (!matches) {
 			matches = menu_completion(data.menu->entries, text,
 							w.we_wordc,
@@ -1192,7 +1200,8 @@ static void signal_callback(int signum, void *user_data)
 
 	switch (signum) {
 	case SIGINT:
-		if (!queue_isempty(data.inputs) && !data.mode) {
+		if (!queue_isempty(data.inputs) &&
+				data.mode == MODE_INTERACTIVE) {
 			rl_replace_line("", 0);
 			rl_crlf();
 			rl_on_new_line();
@@ -1210,7 +1219,7 @@ static void signal_callback(int signum, void *user_data)
 		/* fall through */
 	case SIGTERM:
 		if (!terminated) {
-			if (!data.mode) {
+			if (data.mode == MODE_INTERACTIVE) {
 				rl_replace_line("", 0);
 				rl_crlf();
 			}
@@ -1266,7 +1275,7 @@ done:
 
 static void rl_init(void)
 {
-	if (data.mode)
+	if (data.mode == MODE_NON_INTERACTIVE)
 		return;
 
 	/* Allow conditional parsing of the ~/.inputrc file. */
@@ -1346,7 +1355,7 @@ void bt_shell_init(int argc, char **argv, const struct bt_shell_opt *opt)
 			usage(argc, argv, opt);
 			data.argc = 1;
 			data.argv = &cmplt;
-			data.mode = 1;
+			data.mode = MODE_NON_INTERACTIVE;
 			goto done;
 		case 's':
 			if (optarg && data.init_fd < 0) {
@@ -1400,10 +1409,10 @@ void bt_shell_init(int argc, char **argv, const struct bt_shell_opt *opt)
 	data.argc = argc - optind;
 	data.argv = argv + optind;
 	optind = 0;
-	data.mode = (data.argc > 0);
+	data.mode = (data.argc > 0) ? MODE_NON_INTERACTIVE : MODE_INTERACTIVE;
 
 done:
-	if (data.mode)
+	if (data.mode == MODE_NON_INTERACTIVE)
 		bt_shell_set_env("NON_INTERACTIVE", &data.mode);
 
 	mainloop_init();
@@ -1420,13 +1429,13 @@ done:
 
 static void rl_cleanup(void)
 {
-	if (data.mode)
+	if (data.mode == MODE_NON_INTERACTIVE)
 		return;
 
 	if (data.history[0] != '\0')
 		write_history(data.history);
 
-	rl_message("");
+	rl_message("%s", "");
 	rl_callback_handler_remove();
 }
 
@@ -1441,7 +1450,26 @@ static void env_destroy(void *data)
 int bt_shell_run(void)
 {
 	int status;
+	const struct queue_entry *submenu;
 
+	/* Check if on non-interactive mode skip pre-run since that is on-demand
+	 * by shell_exec() only for the menu in use.
+	 */
+	if (data.mode == MODE_NON_INTERACTIVE)
+		goto done;
+
+	if (data.menu && data.menu->pre_run)
+		data.menu->pre_run(data.menu);
+
+	for (submenu = queue_get_entries(data.submenus); submenu;
+	     submenu = submenu->next) {
+		struct bt_shell_menu *menu = submenu->data;
+
+		if (menu->pre_run != NULL)
+			menu->pre_run(menu);
+	}
+
+done:
 	status = mainloop_run_with_signal(signal_callback, NULL);
 
 	bt_shell_cleanup();
@@ -1540,10 +1568,16 @@ void bt_shell_quit(int status)
 
 void bt_shell_noninteractive_quit(int status)
 {
-	if (!data.mode || data.timeout) {
+	if (data.mode == MODE_INTERACTIVE || data.timeout) {
 		bt_shell_dequeue_exec();
 		return;
 	}
+
+	/* Ignore EINPROGRESS as it is meant for commands that need to stay
+	 * running.
+	 */
+	if (status == -EINPROGRESS)
+		return;
 
 	bt_shell_quit(status);
 }
@@ -1581,7 +1615,7 @@ void bt_shell_set_prompt(const char *string, const char *color)
 {
 	char *prompt;
 
-	if (!data.init || data.mode)
+	if (!data.init || data.mode == MODE_NON_INTERACTIVE)
 		return;
 
 	/* Envelope color within RL_PROMPT_START_IGNORE (\001) and
@@ -1614,12 +1648,18 @@ bool bt_shell_attach(int fd)
 	if (!input)
 		return false;
 
-	if (!data.mode) {
+	if (data.mode == MODE_INTERACTIVE) {
 		io_set_read_handler(input->io, input_read, input, NULL);
 		io_set_disconnect_handler(input->io, input_hup, input, NULL);
-	}
 
-	if (data.mode) {
+		if (data.init_fd >= 0) {
+			int fd = data.init_fd;
+
+			data.init_fd = -1;
+			if (!bt_shell_attach(fd))
+				return false;
+		}
+	} else {
 		if (shell_exec(data.argc, data.argv) < 0) {
 			bt_shell_noninteractive_quit(EXIT_FAILURE);
 			return true;
@@ -1628,12 +1668,6 @@ bool bt_shell_attach(int fd)
 		if (data.timeout)
 			timeout_add(data.timeout * 1000, shell_quit, NULL,
 								NULL);
-	} else if (data.init_fd >= 0) {
-		int fd = data.init_fd;
-
-		data.init_fd = -1;
-		if (!bt_shell_attach(fd))
-			return false;
 	}
 
 	return true;
@@ -1701,4 +1735,14 @@ void *bt_shell_get_env(const char *name)
 int bt_shell_get_timeout(void)
 {
 	return data.timeout;
+}
+
+void bt_shell_handle_non_interactive_help(void)
+{
+	if (!data.mode)
+		return;
+	if (data.argv[0] != cmplt)
+		return;
+	print_cmds();
+	exit(EXIT_SUCCESS);
 }

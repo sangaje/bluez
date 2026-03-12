@@ -17,9 +17,9 @@
 #include <string.h>
 #include <errno.h>
 
-#include "lib/bluetooth.h"
-#include "lib/mgmt.h"
-#include "lib/hci.h"
+#include "bluetooth/bluetooth.h"
+#include "bluetooth/mgmt.h"
+#include "bluetooth/hci.h"
 
 #include "src/shared/io.h"
 #include "src/shared/queue.h"
@@ -79,6 +79,20 @@ struct mgmt_notify {
 struct mgmt_tlv_list {
 	struct queue *tlv_queue;
 	uint16_t size;
+};
+
+struct arg_table {
+	const char *name;
+	enum mgmt_io_capability value;
+};
+
+static const struct arg_table iocap_arguments[] = {
+	{ "DisplayOnly", MGMT_IO_CAPABILITY_DISPLAYONLY },
+	{ "DisplayYesNo", MGMT_IO_CAPABILITY_DISPLAYYESNO },
+	{ "KeyboardOnly", MGMT_IO_CAPABILITY_KEYBOARDONLY },
+	{ "NoInputNoOutput", MGMT_IO_CAPABILITY_NOINPUTNOOUTPUT },
+	{ "KeyboardDisplay", MGMT_IO_CAPABILITY_KEYBOARDDISPLAY },
+	{ NULL, 0}
 };
 
 static void destroy_request(void *data)
@@ -686,6 +700,11 @@ void mgmt_tlv_list_free(struct mgmt_tlv_list *tlv_list)
 	free(tlv_list);
 }
 
+uint16_t mgmt_tlv_list_size(struct mgmt_tlv_list *tlv_list)
+{
+	return tlv_list->size;
+}
+
 bool mgmt_tlv_add(struct mgmt_tlv_list *tlv_list, uint16_t type, uint8_t length,
 								void *value)
 {
@@ -1033,4 +1052,42 @@ uint16_t mgmt_get_mtu(struct mgmt *mgmt)
 		return 0;
 
 	return mgmt->mtu;
+}
+
+char *mgmt_iocap_generator(const char *text, int state)
+{
+	static int index, len;
+	const char *arg;
+
+	if (!state) {
+		index = 0;
+		len = strlen(text);
+	}
+
+	while ((arg = iocap_arguments[index].name)) {
+		index++;
+
+		if (!strncmp(arg, text, len))
+			return strdup(arg);
+	}
+
+	return NULL;
+}
+
+enum mgmt_io_capability mgmt_parse_io_capability(const char *capability)
+{
+	const char *arg;
+	int index = 0;
+
+	if (!strcmp(capability, ""))
+		return MGMT_IO_CAPABILITY_KEYBOARDDISPLAY;
+
+	while ((arg = iocap_arguments[index].name)) {
+		if (!strncmp(arg, capability, strlen(capability)))
+			return iocap_arguments[index].value;
+
+		index++;
+	}
+
+	return MGMT_IO_CAPABILITY_INVALID;
 }

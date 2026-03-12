@@ -40,9 +40,9 @@ typedef void (*bt_bap_stream_func_t)(struct bt_bap_stream *stream,
 					void *user_data);
 typedef void (*bt_bap_func_t)(struct bt_bap *bap, void *user_data);
 
-typedef void (*bt_bap_bis_func_t)(uint8_t bis, uint8_t sgrp,
-		struct iovec *caps, struct iovec *meta,
-		struct bt_bap_qos *qos, void *user_data);
+typedef void (*bt_bap_bis_func_t)(uint8_t sid, uint8_t bis, uint8_t sgrp,
+				struct iovec *caps, struct iovec *meta,
+				struct bt_bap_qos *qos, void *user_data);
 
 typedef void (*bt_bap_bcode_reply_t)(void *user_data, int err);
 
@@ -55,7 +55,7 @@ extern struct bt_iso_qos bap_sink_pa_qos;
 /* Local PAC related functions */
 struct bt_bap_pac_qos {
 	uint8_t  framing;
-	uint8_t  phy;
+	uint8_t  phys;
 	uint8_t  rtn;
 	uint16_t latency;
 	uint32_t pd_min;
@@ -66,6 +66,27 @@ struct bt_bap_pac_qos {
 	uint16_t supported_context;
 	uint16_t context;
 };
+
+struct bt_bap_pac_ops {
+	int (*select)(struct bt_bap_pac *lpac, struct bt_bap_pac *rpac,
+			uint32_t chan_alloc, struct bt_bap_pac_qos *qos,
+			bt_bap_pac_select_t cb, void *cb_data, void *user_data);
+	void (*cancel_select)(struct bt_bap_pac *lpac,
+			bt_bap_pac_select_t cb, void *cb_data, void *user_data);
+	int (*config)(struct bt_bap_stream *stream, struct iovec *cfg,
+			struct bt_bap_qos *qos, bt_bap_pac_config_t cb,
+			void *user_data);
+	void (*clear)(struct bt_bap_stream *stream, void *user_data);
+};
+
+struct bt_bap_pac *bt_bap_add_vendor_pac_full(struct gatt_db *db,
+					const char *name, uint8_t type,
+					uint8_t id, uint16_t cid, uint16_t vid,
+					struct bt_bap_pac_qos *qos,
+					struct iovec *data,
+					struct iovec *metadata,
+					struct bt_bap_pac_ops *ops,
+					void *ops_user_data);
 
 struct bt_bap_pac *bt_bap_add_vendor_pac(struct gatt_db *db,
 					const char *name, uint8_t type,
@@ -79,18 +100,6 @@ struct bt_bap_pac *bt_bap_add_pac(struct gatt_db *db, const char *name,
 					struct bt_bap_pac_qos *qos,
 					struct iovec *data,
 					struct iovec *metadata);
-
-struct bt_bap_pac_ops {
-	int (*select)(struct bt_bap_pac *lpac, struct bt_bap_pac *rpac,
-			uint32_t chan_alloc, struct bt_bap_pac_qos *qos,
-			bt_bap_pac_select_t cb, void *cb_data, void *user_data);
-	void (*cancel_select)(struct bt_bap_pac *lpac,
-			bt_bap_pac_select_t cb, void *cb_data, void *user_data);
-	int (*config)(struct bt_bap_stream *stream, struct iovec *cfg,
-			struct bt_bap_qos *qos, bt_bap_pac_config_t cb,
-			void *user_data);
-	void (*clear)(struct bt_bap_stream *stream, void *user_data);
-};
 
 bool bt_bap_pac_set_ops(struct bt_bap_pac *pac, struct bt_bap_pac_ops *ops,
 					void *user_data);
@@ -127,6 +136,8 @@ bool bt_bap_set_user_data(struct bt_bap *bap, void *user_data);
 void *bt_bap_get_user_data(struct bt_bap *bap);
 
 struct bt_att *bt_bap_get_att(struct bt_bap *bap);
+
+struct gatt_db *bt_bap_get_db(struct bt_bap *bap, bool remote);
 
 struct bt_bap *bt_bap_ref(struct bt_bap *bap);
 void bt_bap_unref(struct bt_bap *bap);
@@ -170,9 +181,10 @@ void bt_bap_pac_set_user_data(struct bt_bap_pac *pac, void *user_data);
 void *bt_bap_pac_get_user_data(struct bt_bap_pac *pac);
 
 /* Stream related functions */
-int bt_bap_select(struct bt_bap_pac *lpac, struct bt_bap_pac *rpac,
-			int *count, bt_bap_pac_select_t func,
-			void *user_data);
+int bt_bap_select(struct bt_bap *bap,
+			struct bt_bap_pac *lpac, struct bt_bap_pac *rpac,
+			unsigned int max_channels, int *count,
+			bt_bap_pac_select_t func, void *user_data);
 
 void bt_bap_cancel_select(struct bt_bap_pac *lpac, bt_bap_pac_select_t func,
 			void *user_data);
@@ -182,6 +194,9 @@ struct bt_bap_stream *bt_bap_stream_new(struct bt_bap *bap,
 					struct bt_bap_pac *rpac,
 					struct bt_bap_qos *pqos,
 					struct iovec *data);
+
+void bt_bap_stream_lock(struct bt_bap_stream *stream);
+void bt_bap_stream_unlock(struct bt_bap_stream *stream);
 
 struct bt_bap *bt_bap_stream_get_session(struct bt_bap_stream *stream);
 uint8_t bt_bap_stream_get_state(struct bt_bap_stream *stream);
@@ -271,7 +286,7 @@ void bt_bap_verify_bis(struct bt_bap *bap, uint8_t bis_index,
 		struct iovec *caps,
 		struct bt_bap_pac **lpac);
 
-bool bt_bap_parse_base(struct iovec *base,
+bool bt_bap_parse_base(uint8_t sid, struct iovec *base,
 			struct bt_bap_qos *qos,
 			util_debug_func_t func,
 			bt_bap_bis_func_t handler,
@@ -284,8 +299,9 @@ unsigned int bt_bap_bis_cb_register(struct bt_bap *bap,
 				bt_bap_destroy_func_t destroy);
 bool bt_bap_bis_cb_unregister(struct bt_bap *bap, unsigned int id);
 
-void bt_bap_bis_probe(struct bt_bap *bap, uint8_t bis, uint8_t sgrp,
-	struct iovec *caps, struct iovec *meta, struct bt_bap_qos *qos);
+void bt_bap_bis_probe(struct bt_bap *bap, uint8_t sid, uint8_t bis,
+			uint8_t sgrp, struct iovec *caps, struct iovec *meta,
+			struct bt_bap_qos *qos);
 void bt_bap_bis_remove(struct bt_bap *bap);
 
 void bt_bap_req_bcode(struct bt_bap_stream *stream,

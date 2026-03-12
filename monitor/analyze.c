@@ -19,7 +19,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#include "lib/bluetooth.h"
+#include "bluetooth/bluetooth.h"
 
 #include "src/shared/util.h"
 #include "src/shared/queue.h"
@@ -53,12 +53,6 @@ struct hci_dev {
 	struct queue *conn_list;
 };
 
-#define CONN_BR_ACL	0x01
-#define CONN_BR_SCO	0x02
-#define CONN_BR_ESCO	0x03
-#define CONN_LE_ACL	0x04
-#define CONN_LE_ISO	0x05
-
 struct hci_stats {
 	size_t bytes;
 	size_t num;
@@ -74,8 +68,12 @@ struct hci_conn {
 	uint16_t link;
 	uint8_t type;
 	uint8_t bdaddr[6];
+	uint8_t bdaddr_type;
 	bool setup_seen;
 	bool terminated;
+	uint8_t disconnect_reason;
+	unsigned long frame_connected;
+	unsigned long frame_disconnected;
 	struct queue *tx_queue;
 	struct timeval last_rx;
 	struct queue *chan_list;
@@ -112,7 +110,7 @@ static void tmp_write(void *data, void *user_data)
 	fprintf(tmp, "%lld %zu\n", plot->x_msec, plot->y_count);
 }
 
-static void plot_draw(struct queue *queue, const char *tittle)
+static void plot_draw(struct queue *queue, const char *title)
 {
 	FILE *gplot;
 
@@ -132,7 +130,7 @@ static void plot_draw(struct queue *queue, const char *tittle)
 	fprintf(gplot, "set tics out nomirror\n");
 	fprintf(gplot, "set log y\n");
 	fprintf(gplot, "set yrange [0.5:*]\n");
-	fprintf(gplot, "plot $data using 1:2 t '%s' w impulses\n", tittle);
+	fprintf(gplot, "plot $data using 1:2 t '%s' w impulses\n", title);
 	fflush(gplot);
 
 	pclose(gplot);
@@ -223,20 +221,23 @@ static void conn_destroy(void *data)
 	const char *str;
 
 	switch (conn->type) {
-	case CONN_BR_ACL:
+	case BTMON_CONN_ACL:
 		str = "BR-ACL";
 		break;
-	case CONN_BR_SCO:
-		str = "BR-SCO";
-		break;
-	case CONN_BR_ESCO:
-		str = "BR-ESCO";
-		break;
-	case CONN_LE_ACL:
+	case BTMON_CONN_LE:
 		str = "LE-ACL";
 		break;
-	case CONN_LE_ISO:
-		str = "LE-ISO";
+	case BTMON_CONN_SCO:
+		str = "BR-SCO";
+		break;
+	case BTMON_CONN_ESCO:
+		str = "BR-ESCO";
+		break;
+	case BTMON_CONN_CIS:
+		str = "LE-CIS";
+		break;
+	case BTMON_CONN_BIS:
+		str = "LE-BIS";
 		break;
 	default:
 		str = "unknown";
@@ -244,12 +245,21 @@ static void conn_destroy(void *data)
 	}
 
 	printf("  Found %s connection with handle %u\n", str, conn->handle);
-	/* TODO: Store address type */
-	packet_print_addr("Address", conn->bdaddr, 0x00);
+	packet_print_addr("Address", conn->bdaddr, conn->bdaddr_type);
 	if (!conn->setup_seen)
 		print_field("Connection setup missing");
 	print_stats(&conn->rx, "RX");
 	print_stats(&conn->tx, "TX");
+
+	if (conn->setup_seen) {
+		print_field("Connected: #%lu", conn->frame_connected);
+		if (conn->terminated) {
+			print_field("Disconnected: #%lu",
+					conn->frame_disconnected);
+			print_field("Disconnect Reason: 0x%02x",
+						conn->disconnect_reason);
+		}
+	}
 
 	queue_destroy(conn->rx.plot, free);
 	queue_destroy(conn->tx.plot, free);
@@ -468,6 +478,7 @@ static void command_pkt(struct timeval *tv, uint16_t index,
 }
 
 static void evt_conn_complete(struct hci_dev *dev, struct timeval *tv,
+					unsigned long frame,
 					const void *data, uint16_t size)
 {
 	const struct bt_hci_evt_conn_complete *evt = data;
@@ -476,15 +487,17 @@ static void evt_conn_complete(struct hci_dev *dev, struct timeval *tv,
 	if (evt->status)
 		return;
 
-	conn = conn_lookup_type(dev, le16_to_cpu(evt->handle), CONN_BR_ACL);
+	conn = conn_lookup_type(dev, le16_to_cpu(evt->handle), BTMON_CONN_ACL);
 	if (!conn)
 		return;
 
 	memcpy(conn->bdaddr, evt->bdaddr, 6);
+	conn->frame_connected = frame;
 	conn->setup_seen = true;
 }
 
 static void evt_disconnect_complete(struct hci_dev *dev, struct timeval *tv,
+					unsigned long frame,
 					const void *data, uint16_t size)
 {
 	const struct bt_hci_evt_disconnect_complete *evt = data;
@@ -497,6 +510,8 @@ static void evt_disconnect_complete(struct hci_dev *dev, struct timeval *tv,
 	if (!conn)
 		return;
 
+	conn->frame_disconnected = frame;
+	conn->disconnect_reason = evt->reason;
 	conn->terminated = true;
 }
 
@@ -558,6 +573,7 @@ static void plot_add(struct queue *queue, struct timeval *latency,
 }
 
 static void evt_le_conn_complete(struct hci_dev *dev, struct timeval *tv,
+					unsigned long frame,
 					struct iovec *iov)
 {
 	const struct bt_hci_evt_le_conn_complete *evt;
@@ -567,15 +583,18 @@ static void evt_le_conn_complete(struct hci_dev *dev, struct timeval *tv,
 	if (!evt || evt->status)
 		return;
 
-	conn = conn_lookup_type(dev, le16_to_cpu(evt->handle), CONN_LE_ACL);
+	conn = conn_lookup_type(dev, le16_to_cpu(evt->handle), BTMON_CONN_LE);
 	if (!conn)
 		return;
 
 	memcpy(conn->bdaddr, evt->peer_addr, 6);
+	conn->bdaddr_type = evt->peer_addr_type;
+	conn->frame_connected = frame;
 	conn->setup_seen = true;
 }
 
 static void evt_le_enh_conn_complete(struct hci_dev *dev, struct timeval *tv,
+					unsigned long frame,
 					struct iovec *iov)
 {
 	const struct bt_hci_evt_le_enhanced_conn_complete *evt;
@@ -585,11 +604,13 @@ static void evt_le_enh_conn_complete(struct hci_dev *dev, struct timeval *tv,
 	if (!evt || evt->status)
 		return;
 
-	conn = conn_lookup_type(dev, le16_to_cpu(evt->handle), CONN_LE_ACL);
+	conn = conn_lookup_type(dev, le16_to_cpu(evt->handle), BTMON_CONN_LE);
 	if (!conn)
 		return;
 
 	memcpy(conn->bdaddr, evt->peer_addr, 6);
+	conn->bdaddr_type = evt->peer_addr_type;
+	conn->frame_connected = frame;
 	conn->setup_seen = true;
 }
 
@@ -643,6 +664,7 @@ static void evt_num_completed_packets(struct hci_dev *dev, struct timeval *tv,
 }
 
 static void evt_sync_conn_complete(struct hci_dev *dev, struct timeval *tv,
+					unsigned long frame,
 					const void *data, uint16_t size)
 {
 	const struct bt_hci_evt_sync_conn_complete *evt = data;
@@ -656,10 +678,12 @@ static void evt_sync_conn_complete(struct hci_dev *dev, struct timeval *tv,
 		return;
 
 	memcpy(conn->bdaddr, evt->bdaddr, 6);
+	conn->frame_connected = frame;
 	conn->setup_seen = true;
 }
 
 static void evt_le_cis_established(struct hci_dev *dev, struct timeval *tv,
+					unsigned long frame,
 					struct iovec *iov)
 {
 	const struct bt_hci_evt_le_cis_established *evt;
@@ -670,10 +694,11 @@ static void evt_le_cis_established(struct hci_dev *dev, struct timeval *tv,
 		return;
 
 	conn = conn_lookup_type(dev, le16_to_cpu(evt->conn_handle),
-						CONN_LE_ISO);
+						BTMON_CONN_CIS);
 	if (!conn)
 		return;
 
+	conn->frame_connected = frame;
 	conn->setup_seen = true;
 
 	link = link_lookup(dev, conn->handle);
@@ -699,6 +724,7 @@ static void evt_le_cis_req(struct hci_dev *dev, struct timeval *tv,
 }
 
 static void evt_le_big_complete(struct hci_dev *dev, struct timeval *tv,
+					unsigned long frame,
 					struct iovec *iov)
 {
 	const struct bt_hci_evt_le_big_complete *evt;
@@ -715,13 +741,16 @@ static void evt_le_big_complete(struct hci_dev *dev, struct timeval *tv,
 		if (!util_iov_pull_le16(iov, &handle))
 			return;
 
-		conn = conn_lookup_type(dev, handle, CONN_LE_ISO);
-		if (conn)
+		conn = conn_lookup_type(dev, handle, BTMON_CONN_BIS);
+		if (conn) {
 			conn->setup_seen = true;
+			conn->frame_connected = frame;
+		}
 	}
 }
 
 static void evt_le_big_sync_established(struct hci_dev *dev, struct timeval *tv,
+					unsigned long frame,
 					struct iovec *iov)
 {
 	const struct bt_hci_evt_le_big_sync_estabilished *evt;
@@ -738,13 +767,16 @@ static void evt_le_big_sync_established(struct hci_dev *dev, struct timeval *tv,
 		if (!util_iov_pull_le16(iov, &handle))
 			return;
 
-		conn = conn_lookup_type(dev, handle, CONN_LE_ISO);
-		if (conn)
+		conn = conn_lookup_type(dev, handle, BTMON_CONN_BIS);
+		if (conn) {
 			conn->setup_seen = true;
+			conn->frame_connected = frame;
+		}
 	}
 }
 
 static void evt_le_meta_event(struct hci_dev *dev, struct timeval *tv,
+					unsigned long frame,
 					const void *data, uint16_t size)
 {
 	struct iovec iov = {
@@ -758,27 +790,28 @@ static void evt_le_meta_event(struct hci_dev *dev, struct timeval *tv,
 
 	switch (subevt) {
 	case BT_HCI_EVT_LE_CONN_COMPLETE:
-		evt_le_conn_complete(dev, tv, &iov);
+		evt_le_conn_complete(dev, tv, frame, &iov);
 		break;
 	case BT_HCI_EVT_LE_ENHANCED_CONN_COMPLETE:
-		evt_le_enh_conn_complete(dev, tv, &iov);
+		evt_le_enh_conn_complete(dev, tv, frame, &iov);
 		break;
 	case BT_HCI_EVT_LE_CIS_ESTABLISHED:
-		evt_le_cis_established(dev, tv, &iov);
+		evt_le_cis_established(dev, tv, frame, &iov);
 		break;
 	case BT_HCI_EVT_LE_CIS_REQ:
 		evt_le_cis_req(dev, tv, &iov);
 		break;
 	case BT_HCI_EVT_LE_BIG_COMPLETE:
-		evt_le_big_complete(dev, tv, &iov);
+		evt_le_big_complete(dev, tv, frame, &iov);
 		break;
 	case BT_HCI_EVT_LE_BIG_SYNC_ESTABILISHED:
-		evt_le_big_sync_established(dev, tv, &iov);
+		evt_le_big_sync_established(dev, tv, frame, &iov);
 		break;
 	}
 }
 
 static void event_pkt(struct timeval *tv, uint16_t index,
+					unsigned long frame,
 					const void *data, uint16_t size)
 {
 	const struct bt_hci_evt_hdr *hdr = data;
@@ -796,10 +829,10 @@ static void event_pkt(struct timeval *tv, uint16_t index,
 
 	switch (hdr->evt) {
 	case BT_HCI_EVT_CONN_COMPLETE:
-		evt_conn_complete(dev, tv, data, size);
+		evt_conn_complete(dev, tv, frame, data, size);
 		break;
 	case BT_HCI_EVT_DISCONNECT_COMPLETE:
-		evt_disconnect_complete(dev, tv, data, size);
+		evt_disconnect_complete(dev, tv, frame, data, size);
 		break;
 	case BT_HCI_EVT_CMD_COMPLETE:
 		evt_cmd_complete(dev, tv, data, size);
@@ -808,10 +841,10 @@ static void event_pkt(struct timeval *tv, uint16_t index,
 		evt_num_completed_packets(dev, tv, data, size);
 		break;
 	case BT_HCI_EVT_SYNC_CONN_COMPLETE:
-		evt_sync_conn_complete(dev, tv, data, size);
+		evt_sync_conn_complete(dev, tv, frame, data, size);
 		break;
 	case BT_HCI_EVT_LE_META_EVENT:
-		evt_le_meta_event(dev, tv, data, size);
+		evt_le_meta_event(dev, tv, frame, data, size);
 		break;
 	}
 }
@@ -928,9 +961,13 @@ static void sco_pkt(struct timeval *tv, uint16_t index, bool out,
 	dev->num_sco++;
 
 	conn = conn_lookup_type(dev, le16_to_cpu(hdr->handle) & 0x0fff,
-								CONN_BR_SCO);
-	if (!conn)
-		return;
+							BTMON_CONN_SCO);
+	if (!conn) {
+		conn = conn_lookup_type(dev, le16_to_cpu(hdr->handle) & 0x0fff,
+							BTMON_CONN_ESCO);
+		if (!conn)
+			return;
+	}
 
 	if (out) {
 		conn_pkt_tx(conn, tv, size - sizeof(*hdr), NULL);
@@ -1015,9 +1052,13 @@ static void iso_pkt(struct timeval *tv, uint16_t index, bool out,
 	dev->num_iso++;
 
 	conn = conn_lookup_type(dev, le16_to_cpu(hdr->handle) & 0x0fff,
-								CONN_LE_ISO);
-	if (!conn)
-		return;
+							BTMON_CONN_CIS);
+	if (!conn) {
+		conn = conn_lookup_type(dev, le16_to_cpu(hdr->handle) & 0x0fff,
+							BTMON_CONN_BIS);
+		if (!conn)
+			return;
+	}
 
 	if (out) {
 		conn_pkt_tx(conn, tv, size - sizeof(*hdr), NULL);
@@ -1042,6 +1083,7 @@ void analyze_trace(const char *path)
 {
 	struct btsnoop *btsnoop_file;
 	unsigned long num_packets = 0;
+	unsigned long num_frames = 0;
 	uint32_t format;
 
 	btsnoop_file = btsnoop_open(path, BTSNOOP_FLAG_PKLG_SUPPORT);
@@ -1079,21 +1121,27 @@ void analyze_trace(const char *path)
 			del_index(&tv, index, buf, pktlen);
 			break;
 		case BTSNOOP_OPCODE_COMMAND_PKT:
+			num_frames++;
 			command_pkt(&tv, index, buf, pktlen);
 			break;
 		case BTSNOOP_OPCODE_EVENT_PKT:
-			event_pkt(&tv, index, buf, pktlen);
+			num_frames++;
+			event_pkt(&tv, index, num_frames, buf, pktlen);
 			break;
 		case BTSNOOP_OPCODE_ACL_TX_PKT:
+			num_frames++;
 			acl_pkt(&tv, index, true, buf, pktlen);
 			break;
 		case BTSNOOP_OPCODE_ACL_RX_PKT:
+			num_frames++;
 			acl_pkt(&tv, index, false, buf, pktlen);
 			break;
 		case BTSNOOP_OPCODE_SCO_TX_PKT:
+			num_frames++;
 			sco_pkt(&tv, index, true, buf, pktlen);
 			break;
 		case BTSNOOP_OPCODE_SCO_RX_PKT:
+			num_frames++;
 			sco_pkt(&tv, index, false, buf, pktlen);
 			break;
 		case BTSNOOP_OPCODE_OPEN_INDEX:
@@ -1118,9 +1166,11 @@ void analyze_trace(const char *path)
 			ctrl_msg(&tv, index, buf, pktlen);
 			break;
 		case BTSNOOP_OPCODE_ISO_TX_PKT:
+			num_frames++;
 			iso_pkt(&tv, index, true, buf, pktlen);
 			break;
 		case BTSNOOP_OPCODE_ISO_RX_PKT:
+			num_frames++;
 			iso_pkt(&tv, index, false, buf, pktlen);
 			break;
 		default:

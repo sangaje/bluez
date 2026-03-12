@@ -13,8 +13,10 @@
 #include <dbus/dbus.h>
 #include <glib.h>
 
-#include <lib/bluetooth.h>
-#include <lib/sdp.h>
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/sdp.h>
+
+#include "shared/mgmt.h"
 
 #define ADAPTER_INTERFACE	"org.bluez.Adapter1"
 
@@ -30,6 +32,7 @@ struct queue;
 struct btd_adapter *btd_adapter_get_default(void);
 bool btd_adapter_is_default(struct btd_adapter *adapter);
 uint16_t btd_adapter_get_index(struct btd_adapter *adapter);
+bool btd_adapter_has_cable_pairing_devices(struct btd_adapter *adapter);
 
 typedef void (*adapter_cb) (struct btd_adapter *adapter, gpointer user_data);
 
@@ -52,6 +55,8 @@ int adapter_init(void);
 void adapter_cleanup(void);
 void adapter_shutdown(void);
 
+void btd_adapter_foreach(adapter_cb func, gpointer user_data);
+
 typedef void (*btd_disconnect_cb) (struct btd_device *device, uint8_t reason);
 void btd_add_disconnect_cb(btd_disconnect_cb func);
 void btd_remove_disconnect_cb(btd_disconnect_cb func);
@@ -62,7 +67,6 @@ void btd_remove_conn_fail_cb(btd_conn_fail_cb func);
 
 struct btd_adapter *adapter_find(const bdaddr_t *sba);
 struct btd_adapter *adapter_find_by_id(int id);
-void adapter_foreach(adapter_cb func, gpointer user_data);
 
 bool btd_adapter_get_pairable(struct btd_adapter *adapter);
 bool btd_adapter_get_powered(struct btd_adapter *adapter);
@@ -99,7 +103,6 @@ const char *adapter_get_path(struct btd_adapter *adapter);
 const bdaddr_t *btd_adapter_get_address(struct btd_adapter *adapter);
 uint8_t btd_adapter_get_address_type(struct btd_adapter *adapter);
 const char *btd_adapter_get_storage_dir(struct btd_adapter *adapter);
-int adapter_set_name(struct btd_adapter *adapter, const char *name);
 
 int adapter_service_add(struct btd_adapter *adapter, sdp_record_t *rec);
 void adapter_service_remove(struct btd_adapter *adapter, uint32_t handle);
@@ -113,6 +116,7 @@ void btd_adapter_unref(struct btd_adapter *adapter);
 
 void btd_adapter_set_class(struct btd_adapter *adapter, uint8_t major,
 							uint8_t minor);
+int btd_adapter_set_name(struct btd_adapter *adapter, const char *name);
 
 struct btd_adapter_driver {
 	const char *name;
@@ -138,8 +142,8 @@ typedef void (*service_auth_cb) (DBusError *derr, void *user_data);
 
 void adapter_add_profile(struct btd_adapter *adapter, gpointer p);
 void adapter_remove_profile(struct btd_adapter *adapter, gpointer p);
-int btd_register_adapter_driver(struct btd_adapter_driver *driver);
-void btd_unregister_adapter_driver(struct btd_adapter_driver *driver);
+int btd_register_adapter_driver(const struct btd_adapter_driver *driver);
+void btd_unregister_adapter_driver(const struct btd_adapter_driver *driver);
 guint btd_request_authorization(const bdaddr_t *src, const bdaddr_t *dst,
 		const char *uuid, service_auth_cb cb, void *user_data);
 guint btd_request_authorization_cable_configured(const bdaddr_t *src, const bdaddr_t *dst,
@@ -205,15 +209,18 @@ int btd_adapter_passkey_reply(struct btd_adapter *adapter,
 				uint32_t passkey);
 
 int adapter_create_bonding(struct btd_adapter *adapter, const bdaddr_t *bdaddr,
-					uint8_t addr_type, uint8_t io_cap);
+						uint8_t addr_type,
+						enum mgmt_io_capability io_cap);
 
 int adapter_bonding_attempt(struct btd_adapter *adapter, const bdaddr_t *bdaddr,
-					uint8_t addr_type, uint8_t io_cap);
+						uint8_t addr_type,
+						enum mgmt_io_capability io_cap);
 
 int adapter_cancel_bonding(struct btd_adapter *adapter, const bdaddr_t *bdaddr,
 							uint8_t addr_type);
 
-int adapter_set_io_capability(struct btd_adapter *adapter, uint8_t io_cap);
+int adapter_set_io_capability(struct btd_adapter *adapter,
+						enum mgmt_io_capability io_cap);
 
 int btd_adapter_read_local_oob_data(struct btd_adapter *adapter);
 
@@ -236,7 +243,7 @@ void adapter_connect_list_remove(struct btd_adapter *adapter,
 typedef void (*adapter_set_device_flags_func_t)(uint8_t status, uint16_t length,
 						const void *param,
 						void *user_data);
-void adapter_set_device_flags(struct btd_adapter *adapter,
+int adapter_set_device_flags(struct btd_adapter *adapter,
 				struct btd_device *device, uint32_t flags,
 				adapter_set_device_flags_func_t func,
 				void *user_data);
@@ -300,3 +307,16 @@ void btd_adapter_store_conn_param(struct btd_adapter *adapter,
 				uint16_t latency, uint16_t timeout);
 void btd_adapter_cancel_service_auth(struct btd_adapter *adapter,
 				struct btd_device *device);
+
+typedef void (*btd_adapter_reply_event_t)(uint8_t status, uint16_t length,
+					const void *param, void *user_data);
+typedef void (*btd_adapter_destroy_func_t)(void *user_data);
+
+unsigned int btd_adapter_send_cmd_event_sync(struct btd_adapter *adapter,
+					uint16_t opcode,
+					uint16_t length, const void *param,
+					uint8_t event,
+					btd_adapter_reply_event_t callback,
+					void *user_data,
+					btd_adapter_destroy_func_t destroy,
+					uint8_t timeout);

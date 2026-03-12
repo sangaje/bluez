@@ -21,11 +21,11 @@
 #include <limits.h>
 #include <errno.h>
 
-#include "lib/bluetooth.h"
-#include "lib/hci.h"
-#include "lib/hci_lib.h"
-#include "lib/l2cap.h"
-#include "lib/uuid.h"
+#include "bluetooth/bluetooth.h"
+#include "bluetooth/hci.h"
+#include "bluetooth/hci_lib.h"
+#include "bluetooth/l2cap.h"
+#include "bluetooth/uuid.h"
 
 #include "src/shared/mainloop.h"
 #include "src/shared/util.h"
@@ -34,8 +34,6 @@
 #include "src/shared/gatt-db.h"
 #include "src/shared/gatt-client.h"
 #include "src/shared/gatt-helpers.h"
-
-#define ATT_CID 4
 
 #define PRLOG(...) \
 	printf(__VA_ARGS__); print_prompt();
@@ -93,7 +91,7 @@ static const char *ecode_to_string(uint8_t ecode)
 	case BT_ATT_ERROR_ATTRIBUTE_NOT_LONG:
 		return "Attribute Not Long";
 	case BT_ATT_ERROR_INSUFFICIENT_ENCRYPTION_KEY_SIZE:
-		return "Insuficient Encryption Key Size";
+		return "Insufficient Encryption Key Size";
 	case BT_ATT_ERROR_INVALID_ATTRIBUTE_VALUE_LEN:
 		return "Invalid Attribute value len";
 	case BT_ATT_ERROR_UNLIKELY:
@@ -178,7 +176,7 @@ static struct client *client_create(int fd, uint16_t mtu)
 
 	cli->att = bt_att_new(fd, false);
 	if (!cli->att) {
-		fprintf(stderr, "Failed to initialze ATT transport layer\n");
+		fprintf(stderr, "Failed to initialize ATT transport layer\n");
 		bt_att_unref(cli->att);
 		free(cli);
 		return NULL;
@@ -1660,7 +1658,7 @@ static int l2cap_le_att_connect(bdaddr_t *src, bdaddr_t *dst, uint8_t dst_type,
 	/* Set up source address */
 	memset(&srcaddr, 0, sizeof(srcaddr));
 	srcaddr.l2_family = AF_BLUETOOTH;
-	srcaddr.l2_cid = htobs(ATT_CID);
+	srcaddr.l2_cid = htobs(BT_ATT_CID);
 	srcaddr.l2_bdaddr_type = 0;
 	bacpy(&srcaddr.l2_bdaddr, src);
 
@@ -1683,7 +1681,7 @@ static int l2cap_le_att_connect(bdaddr_t *src, bdaddr_t *dst, uint8_t dst_type,
 	/* Set up destination address */
 	memset(&dstaddr, 0, sizeof(dstaddr));
 	dstaddr.l2_family = AF_BLUETOOTH;
-	dstaddr.l2_cid = htobs(ATT_CID);
+	dstaddr.l2_cid = htobs(BT_ATT_CID);
 	dstaddr.l2_bdaddr_type = dst_type;
 	bacpy(&dstaddr.l2_bdaddr, dst);
 

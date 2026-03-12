@@ -19,12 +19,13 @@
 
 #include <glib.h>
 
-#include "lib/bluetooth.h"
-#include "lib/hci.h"
-#include "lib/hci_lib.h"
-#include "lib/sdp.h"
-#include "lib/uuid.h"
+#include "bluetooth/bluetooth.h"
+#include "bluetooth/hci.h"
+#include "bluetooth/hci_lib.h"
+#include "bluetooth/sdp.h"
+#include "bluetooth/uuid.h"
 
+#include "src/shared/att-types.h"
 #include "src/shared/util.h"
 #include "att.h"
 #include "btio/btio.h"
@@ -132,7 +133,7 @@ static void connect_cb(GIOChannel *io, GError *err, gpointer user_data)
 		mtu = ATT_DEFAULT_LE_MTU;
 	}
 
-	if (cid == ATT_CID)
+	if (cid == BT_ATT_CID)
 		mtu = ATT_DEFAULT_LE_MTU;
 
 	attrib = g_attrib_new(io, mtu, false);
