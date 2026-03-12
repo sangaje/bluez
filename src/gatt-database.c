@@ -48,6 +48,7 @@
 #define GATT_SERVICE_IFACE	"org.bluez.GattService1"
 #define GATT_CHRC_IFACE		"org.bluez.GattCharacteristic1"
 #define GATT_DESC_IFACE		"org.bluez.GattDescriptor1"
+#define GATT_NOTIFY_CTRL_IFACE "org.bluez.GattNotifyControl1"
 #define ERROR_FAILED		ERROR_INTERFACE ".Failed"
 
 #define UUID_GAP	0x1800
@@ -184,6 +185,8 @@ struct device_state {
 	uint8_t cli_feat[CLI_FEAT_SIZE];
 	bool change_aware;
 	bool out_of_sync;
+	// TODO Maybe i have to chage it to block notify by characteristic
+	bool all_notify_block;
 	struct queue *ccc_states;
 	struct notify *pending;
 };
@@ -292,6 +295,20 @@ static struct device_state *device_state_create(struct btd_gatt_database *db,
 	dev_state->bdaddr_type = bdaddr_type;
 
 	return dev_state;
+}
+
+static struct device_state *find_device_state_by_path(
+					struct btd_gatt_database *database,
+					const char *device_path)
+{
+	struct btd_device *device;
+
+	device = btd_adapter_find_device_by_path(database->adapter, device_path);
+	if (!device)
+		return NULL;
+
+	return find_device_state(database, device_get_address(device),
+						btd_device_get_bdaddr_type(device));
 }
 
 static void device_state_free(void *data)
@@ -614,6 +631,10 @@ static void gatt_record_free(void *data)
 static void gatt_database_free(void *data)
 {
 	struct btd_gatt_database *database = data;
+
+	g_dbus_unregister_interface(btd_get_dbus_connection(),
+					adapter_get_path(database->adapter),
+					GATT_NOTIFY_CTRL_IFACE);
 
 	if (database->le_io) {
 		g_io_channel_shutdown(database->le_io, FALSE, NULL);
@@ -1446,6 +1467,12 @@ static void send_notification_to_device(void *data, void *user_data)
 		return;
 	}
 
+	// TODO is Done?
+	// TODO Make it block HID notify only
+	if (device_state->all_notify_block){
+		DBG("GATT server block notification/indication");
+		return;
+	}
 	/*
 	 * TODO: If the device is not connected but bonded, send the
 	 * notification/indication when it becomes connected.
@@ -3933,6 +3960,48 @@ static DBusMessage *manager_unregister_app(DBusConnection *conn,
 	return dbus_message_new_method_return(msg);
 }
 
+static DBusMessage *notify_enable_device(DBusConnection *conn,
+					DBusMessage *msg, void *user_data)
+{
+	struct btd_gatt_database *database = user_data;
+	const char *device_path;
+	struct device_state *state;
+
+	if (!dbus_message_get_args(msg, NULL,
+					DBUS_TYPE_OBJECT_PATH, &device_path,
+					DBUS_TYPE_INVALID))
+		return btd_error_invalid_args(msg);
+
+	state = find_device_state_by_path(database, device_path);
+	if (!state)
+		return btd_error_failed(msg, "Device state not found");
+
+	state->all_notify_block = false;
+
+	return dbus_message_new_method_return(msg);
+}
+
+static DBusMessage *notify_disable_device(DBusConnection *conn,
+					DBusMessage *msg, void *user_data)
+{
+	struct btd_gatt_database *database = user_data;
+	const char *device_path;
+	struct device_state *state;
+
+	if (!dbus_message_get_args(msg, NULL,
+					DBUS_TYPE_OBJECT_PATH, &device_path,
+					DBUS_TYPE_INVALID))
+		return btd_error_invalid_args(msg);
+
+	state = find_device_state_by_path(database, device_path);
+	if (!state)
+		return btd_error_failed(msg, "Device state not found");
+
+	state->all_notify_block = true;
+
+	return dbus_message_new_method_return(msg);
+}
+
 static const GDBusMethodTable manager_methods[] = {
 	{ GDBUS_ASYNC_METHOD("RegisterApplication",
 					GDBUS_ARGS({ "application", "o" },
@@ -3941,6 +4010,16 @@ static const GDBusMethodTable manager_methods[] = {
 	{ GDBUS_ASYNC_METHOD("UnregisterApplication",
 					GDBUS_ARGS({ "application", "o" }),
 					NULL, manager_unregister_app) },
+	{ }
+};
+
+static const GDBusMethodTable notify_ctrl_methods[] = {
+	{ GDBUS_METHOD("EnableNotifyDevice",
+				GDBUS_ARGS({ "device", "o" }),
+				NULL, notify_enable_device) },
+	{ GDBUS_METHOD("DisableNotifyDevice",
+				GDBUS_ARGS({ "device", "o" }),
+				NULL, notify_disable_device) },
 	{ }
 };
 
@@ -4117,6 +4196,14 @@ bredr:
 		DBG("GATT Manager registered for adapter: %s",
 						adapter_get_path(adapter));
 
+	if (!g_dbus_register_interface(btd_get_dbus_connection(),
+						adapter_get_path(adapter),
+						GATT_NOTIFY_CTRL_IFACE,
+						notify_ctrl_methods, NULL, NULL,
+						database, NULL))
+		error("Failed to register %s on %s", GATT_NOTIFY_CTRL_IFACE,
+						adapter_get_path(adapter));
+
 	register_core_services(database);
 
 	database->db_id = gatt_db_register(database->db, gatt_db_service_added,
@@ -4146,6 +4233,10 @@ void btd_gatt_database_destroy(struct btd_gatt_database *database)
 	g_dbus_unregister_interface(btd_get_dbus_connection(),
 					adapter_get_path(database->adapter),
 					GATT_MANAGER_IFACE);
+
+	g_dbus_unregister_interface(btd_get_dbus_connection(),
+					adapter_get_path(database->adapter),
+					GATT_NOTIFY_CTRL_IFACE);
 
 	gatt_database_free(database);
 }
